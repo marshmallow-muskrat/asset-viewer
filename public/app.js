@@ -982,6 +982,9 @@ async function loadAssetIndex() {
       throw new Error('No local asset API');
     }
     const index = await response.json();
+    if (!Array.isArray(index.assets) || index.assets.length === 0) {
+      throw new Error('No local asset folder');
+    }
     state.sourceMode = 'server';
     state.uploadedFiles.clear();
     releaseObjectUrls();
