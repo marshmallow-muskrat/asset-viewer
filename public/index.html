@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#080e16" />
+    <title>3D Asset Viewer</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <div>
+            <p class="eyebrow">3D ASSET LIBRARY</p>
+            <h1>Asset viewer</h1>
+          </div>
+        </div>
+
+        <div class="folder-pill" id="folderStatus">
+          <span class="status-dot"></span>
+          <span id="folderStatusText">Choose a folder to begin</span>
+        </div>
+
+        <div class="folder-actions">
+          <button id="chooseFolder" class="folder-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3.5 7.5h6l1.8 2h9.2v8.8a2.2 2.2 0 0 1-2.2 2.2H5.7a2.2 2.2 0 0 1-2.2-2.2z"></path>
+              <path d="M3.5 7.5V5.7a2.2 2.2 0 0 1 2.2-2.2h3.1l1.8 2h3"></path>
+            </svg>
+            <span>Choose asset folder</span>
+          </button>
+          <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
+          <p class="folder-help">Files stay in this browser. Nothing is uploaded.</p>
+        </div>
+
+        <div class="sidebar-controls">
+          <label class="field-label" for="packFilter">Collection</label>
+          <select id="packFilter" class="select-control">
+            <option value="all">All collections</option>
+          </select>
+
+          <label class="field-label" for="searchInput">Find an asset</label>
+          <div class="search-box">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5"></circle>
+              <path d="m16 16 4.25 4.25"></path>
+            </svg>
+            <input id="searchInput" type="search" placeholder="Search by name or folder" autocomplete="off" />
+          </div>
+
+          <div class="results-row">
+            <span id="resultsLabel">Choose a folder to begin</span>
+            <button id="refreshAssets" class="icon-button" type="button" title="Choose a different asset folder" aria-label="Choose a different asset folder">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 11a8.1 8.1 0 0 0-14.7-4.7L4 8"></path>
+                <path d="M4 4v4h4"></path>
+                <path d="M4 13a8.1 8.1 0 0 0 14.7 4.7L20 16"></path>
+                <path d="M20 20v-4h-4"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="assetList" class="asset-list" aria-label="Assets"></div>
+
+        <div class="sidebar-footer">
+          <span class="footer-dot"></span>
+          <span>View-only mode</span>
+          <span class="footer-divider"></span>
+          <span id="sourceLabel">Folder stays local</span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="location-block">
+            <p class="eyebrow">PREVIEWING</p>
+            <div class="location-line">
+              <span id="selectedName">Choose an asset</span>
+              <span class="location-separator">/</span>
+              <span id="selectedSection">Your library</span>
+            </div>
+          </div>
+          <div class="topbar-note">
+            <span class="key-hint">DRAG</span>
+            <span>to orbit</span>
+            <span class="key-hint">SCROLL</span>
+            <span>to zoom</span>
+          </div>
+        </header>
+
+        <section id="viewportShell" class="viewport-shell" aria-label="3D asset preview">
+          <div class="viewport-backdrop"></div>
+          <div id="viewport" class="viewport"></div>
+
+          <div id="emptyState" class="empty-state">
+            <div class="empty-orbit" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <p class="eyebrow">READY WHEN YOU ARE</p>
+            <h2>Choose a folder to inspect assets</h2>
+            <p class="empty-description">Pick a folder containing .blend files and matching glTF, GLB, OBJ, or FBX previews. Drag to orbit—there are no editing tools here.</p>
+            <button id="chooseFolderEmpty" class="empty-action" type="button">Choose an asset folder</button>
+          </div>
+
+          <div id="loadingState" class="loading-state" hidden>
+            <span class="loader-ring"></span>
+            <span id="loadingLabel">Loading preview…</span>
+          </div>
+
+          <div class="viewport-toolbar">
+            <button id="resetView" class="tool-button" type="button" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 12a8 8 0 1 0 2.34-5.66"></path>
+                <path d="M4 4v5h5"></path>
+              </svg>
+              <span>Reset view</span>
+            </button>
+            <button id="spinToggle" class="tool-button" type="button" disabled aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 12a8 8 0 0 1-14.47 4.7"></path>
+                <path d="M4 12a8 8 0 0 1 14.47-4.7"></path>
+                <path d="M5 21v-4h4"></path>
+                <path d="M19 3v4h-4"></path>
+              </svg>
+              <span>Auto spin</span>
+            </button>
+            <div class="toolbar-spacer"></div>
+            <div class="preview-badge" id="previewBadge">No preview loaded</div>
+          </div>
+
+          <div class="gesture-hint">
+            <span class="gesture-icon">↻</span>
+            <span>Orbit</span>
+            <span class="gesture-divider"></span>
+            <span class="gesture-icon">⌕</span>
+            <span>Zoom</span>
+            <span class="gesture-divider"></span>
+            <span class="gesture-icon">✥</span>
+            <span>Pan</span>
+          </div>
+        </section>
+
+        <footer class="asset-footer">
+          <div class="asset-meta">
+            <span class="meta-label">SOURCE FILE</span>
+            <span id="selectedPath">No asset selected</span>
+          </div>
+          <div class="asset-meta asset-meta-right">
+            <span class="meta-label">PREVIEW FORMAT</span>
+            <span id="previewFormat">—</span>
+          </div>
+        </footer>
+      </main>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
