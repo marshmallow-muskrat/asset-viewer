@@ -4,7 +4,8 @@
   "private": false,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check public/app.js && node --check server.js"
   },
   "dependencies": {
     "three": "^0.185.1"

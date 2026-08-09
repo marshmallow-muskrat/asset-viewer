@@ -14,7 +14,7 @@ if [[ -z "$NODE_BIN" && -x "/Users/shanebaker/.local/node/bin/node" ]]; then
 fi
 
 if [[ -z "$NODE_BIN" ]]; then
-  osascript -e 'display dialog "Node.js is needed to open 3D Asset Viewer." with title "3D Asset Viewer" buttons {"OK"} default button "OK"'
+  osascript -e 'display dialog "Node.js is needed to open Asset Shelf." with title "Asset Shelf" buttons {"OK"} default button "OK"'
   exit 1
 fi
 

@@ -15,6 +15,10 @@ const ui = {
   folderInput: document.querySelector('#folderInput'),
   folderStatus: document.querySelector('#folderStatus'),
   folderStatusText: document.querySelector('#folderStatusText'),
+  gridView: document.querySelector('#gridView'),
+  healthFilter: document.querySelector('#healthFilter'),
+  installApp: document.querySelector('#installApp'),
+  listView: document.querySelector('#listView'),
   loadingState: document.querySelector('#loadingState'),
   loadingLabel: document.querySelector('#loadingLabel'),
   packFilter: document.querySelector('#packFilter'),
@@ -30,6 +34,26 @@ const ui = {
   sourceLabel: document.querySelector('#sourceLabel'),
   spinToggle: document.querySelector('#spinToggle'),
   viewport: document.querySelector('#viewport'),
+  viewportShell: document.querySelector('#viewportShell'),
+  dropOverlay: document.querySelector('#dropOverlay'),
+  detailsToggle: document.querySelector('#detailsToggle'),
+  fullscreenToggle: document.querySelector('#fullscreenToggle'),
+  inspectorPanel: document.querySelector('#inspectorPanel'),
+  closeInspector: document.querySelector('#closeInspector'),
+  inspectorPreview: document.querySelector('#inspectorPreview'),
+  detailName: document.querySelector('#detailName'),
+  detailLocation: document.querySelector('#detailLocation'),
+  detailStatus: document.querySelector('#detailStatus'),
+  detailFormat: document.querySelector('#detailFormat'),
+  detailSize: document.querySelector('#detailSize'),
+  detailMeshes: document.querySelector('#detailMeshes'),
+  detailTriangles: document.querySelector('#detailTriangles'),
+  detailMaterials: document.querySelector('#detailMaterials'),
+  detailPath: document.querySelector('#detailPath'),
+  detailNote: document.querySelector('#detailNote'),
+  favoriteToggle: document.querySelector('#favoriteToggle'),
+  copyPath: document.querySelector('#copyPath'),
+  convertAsset: document.querySelector('#convertAsset'),
 };
 
 const state = {
@@ -44,7 +68,44 @@ const state = {
   uploadedFiles: new Map(),
   objectUrls: new Map(),
   uploadedFolderName: '',
+  assetHealth: new Map(),
+  favorites: new Set(),
+  metrics: new Map(),
+  thumbnails: new Map(),
+  viewMode: 'grid',
+  detailsOpen: false,
+  blenderAvailable: false,
 };
+
+const PREFERENCES_KEY = 'asset-shelf:preferences';
+
+function readPreferences() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(PREFERENCES_KEY) || '{}');
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+const preferences = readPreferences();
+state.favorites = new Set(Array.isArray(preferences.favorites) ? preferences.favorites : []);
+state.viewMode = preferences.viewMode === 'list' ? 'list' : 'grid';
+state.autoSpin = preferences.autoSpin === true;
+
+function savePreferences(extra = {}) {
+  try {
+    window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify({
+      ...preferences,
+      ...extra,
+      autoSpin: state.autoSpin,
+      viewMode: state.viewMode,
+      favorites: [...state.favorites],
+    }));
+  } catch {
+    // Local preferences are an enhancement, not a requirement for viewing.
+  }
+}
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#0a121d');
@@ -60,6 +121,39 @@ renderer.toneMappingExposure = 1.15;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 ui.viewport.appendChild(renderer.domElement);
+
+let thumbnailRenderer = null;
+let thumbnailScene = null;
+let thumbnailCamera = null;
+
+function ensureThumbnailRenderer() {
+  if (thumbnailRenderer) {
+    return true;
+  }
+
+  try {
+    thumbnailRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+    thumbnailRenderer.setPixelRatio(1);
+    thumbnailRenderer.setSize(320, 180, false);
+    thumbnailRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    thumbnailRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    thumbnailRenderer.toneMappingExposure = 1.2;
+    thumbnailScene = new THREE.Scene();
+    thumbnailScene.background = new THREE.Color('#252a30');
+    thumbnailCamera = new THREE.PerspectiveCamera(35, 16 / 9, 0.01, 1000);
+    thumbnailScene.add(new THREE.HemisphereLight(0xf2f5f7, 0x20252b, 2.1));
+    const thumbnailKey = new THREE.DirectionalLight(0xffffff, 3.4);
+    thumbnailKey.position.set(4, 7, 5);
+    thumbnailScene.add(thumbnailKey);
+    const thumbnailRim = new THREE.DirectionalLight(0xa8e6cf, 1.8);
+    thumbnailRim.position.set(-4, 2, -4);
+    thumbnailScene.add(thumbnailRim);
+    return true;
+  } catch {
+    thumbnailRenderer = null;
+    return false;
+  }
+}
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -192,10 +286,103 @@ function getAssetSearchText(asset) {
     asset.location,
     asset.blendPath,
     asset.previewPath,
+    asset.previewLabel,
+    asset.previewKind,
   ]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
+}
+
+function getAssetKey(asset) {
+  return lowerPath([
+    asset.source || 'asset',
+    asset.blendPath || asset.previewPath || asset.name,
+  ].join(':'));
+}
+
+function isFavorite(asset) {
+  return Boolean(asset && state.favorites.has(getAssetKey(asset)));
+}
+
+function getAssetHealth(asset) {
+  if (!asset) {
+    return 'attention';
+  }
+  const key = getAssetKey(asset);
+  if (state.assetHealth.has(key)) {
+    return state.assetHealth.get(key);
+  }
+  return asset.previewKind === 'none' ? 'attention' : 'ready';
+}
+
+function setAssetHealth(asset, health) {
+  if (asset) {
+    state.assetHealth.set(getAssetKey(asset), health);
+  }
+}
+
+function formatCount(value) {
+  return Number.isFinite(value) ? value.toLocaleString() : '—';
+}
+
+function getModelMetrics(root) {
+  let meshes = 0;
+  let triangles = 0;
+  const materials = new Set();
+  let animations = 0;
+
+  root.traverse?.((object) => {
+    if (!object.isMesh) {
+      return;
+    }
+    meshes += 1;
+    const geometry = object.geometry;
+    if (geometry?.index) {
+      triangles += Math.floor(geometry.index.count / 3);
+    } else if (geometry?.attributes?.position) {
+      triangles += Math.floor(geometry.attributes.position.count / 3);
+    }
+    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+    objectMaterials.filter(Boolean).forEach((material) => materials.add(material));
+  });
+
+  animations = Array.isArray(root.animations) ? root.animations.length : 0;
+  return { meshes, triangles, materials: materials.size, animations };
+}
+
+function captureThumbnail(root, asset) {
+  if (!asset || state.thumbnails.has(getAssetKey(asset)) || !ensureThumbnailRenderer()) {
+    return;
+  }
+
+  const clone = root.clone(true);
+  const box = new THREE.Box3().setFromObject(clone);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDimension = Math.max(size.x, size.y, size.z, 0.0001);
+  clone.position.sub(center);
+  clone.scale.multiplyScalar(2.55 / maxDimension);
+  thumbnailScene.add(clone);
+
+  const framedBox = new THREE.Box3().setFromObject(clone);
+  const sphere = framedBox.getBoundingSphere(new THREE.Sphere());
+  const distance = Math.max(sphere.radius * 3.25, 2.8);
+  thumbnailCamera.position.set(distance * 1.05, distance * 0.62, distance * 1.18);
+  thumbnailCamera.near = Math.max(0.01, sphere.radius / 100);
+  thumbnailCamera.far = Math.max(100, sphere.radius * 100);
+  thumbnailCamera.lookAt(0, 0, 0);
+  thumbnailCamera.updateProjectionMatrix();
+  thumbnailRenderer.render(thumbnailScene, thumbnailCamera);
+
+  try {
+    state.thumbnails.set(getAssetKey(asset), thumbnailRenderer.domElement.toDataURL('image/jpeg', 0.76));
+  } catch {
+    // A thumbnail is optional; the model remains fully viewable without one.
+  }
+  thumbnailScene.remove(clone);
+  renderAssetList();
+  updateInspector(asset);
 }
 
 function setEmptyState(heading, description) {
@@ -279,7 +466,7 @@ function frameModel(root) {
 }
 
 function resetCamera() {
-  const distance = Math.max(state.modelRadius * 3.35, 2.4);
+  const distance = Math.max(state.modelRadius * 2.2, 1.9);
   camera.position.set(distance * 1.05, distance * 0.66, distance * 1.22);
   camera.near = Math.max(0.01, state.modelRadius / 100);
   camera.far = Math.max(100, state.modelRadius * 100);
@@ -389,12 +576,17 @@ function onModelLoaded(root, asset, token, sourceLabel) {
   setSurfaceDefaults(root);
   modelGroup.add(root);
   frameModel(root);
+  state.metrics.set(getAssetKey(asset), getModelMetrics(root));
+  setAssetHealth(asset, 'ready');
   ui.emptyState.hidden = true;
   ui.resetView.disabled = false;
   ui.spinToggle.disabled = false;
   ui.previewBadge.textContent = sourceLabel + ' preview';
   ui.previewFormat.textContent = sourceLabel;
   setLoading(false);
+  updateInspector(asset);
+  captureThumbnail(root, asset);
+  renderAssetList();
 }
 
 function showLoadError(asset, token) {
@@ -403,6 +595,7 @@ function showLoadError(asset, token) {
   }
 
   clearModel();
+  setAssetHealth(asset, 'attention');
   setEmptyState(
     'Preview unavailable',
     asset.name + ' has a source file, but no browser-readable preview could be loaded.',
@@ -413,6 +606,8 @@ function showLoadError(asset, token) {
   ui.previewBadge.textContent = 'No preview';
   ui.previewFormat.textContent = '—';
   setLoading(false);
+  updateInspector(asset);
+  renderAssetList();
 }
 
 function loadFbx(asset, token, loaders = createAssetLoaders(asset)) {
@@ -496,6 +691,7 @@ function loadGltf(asset, token) {
 function loadAsset(asset) {
   state.selectedAsset = asset;
   state.selectedId = asset.id;
+  savePreferences({ selectedKey: getAssetKey(asset) });
   state.loadToken += 1;
   const token = state.loadToken;
 
@@ -520,6 +716,7 @@ function loadAsset(asset) {
   clearModel();
   ui.resetView.disabled = true;
   ui.spinToggle.disabled = true;
+  updateInspector(asset);
 
   if (asset.previewKind === 'gltf' && getAssetFileUrl(asset, 'preview')) {
     loadGltf(asset, token);
@@ -532,6 +729,7 @@ function loadAsset(asset) {
   }
 
   renderAssetList();
+  requestAnimationFrame(() => focusAssetButton(state.selectedId));
 }
 
 function moveSelection(direction) {
@@ -551,20 +749,106 @@ function moveSelection(direction) {
   }
 
   loadAsset(nextAsset);
-  requestAnimationFrame(() => {
-    const nextButton = [...ui.assetList.querySelectorAll('.asset-item')]
-      .find((button) => button.dataset.assetId === nextAsset.id);
-    if (nextButton) {
-      nextButton.scrollIntoView({ block: 'nearest' });
-      nextButton.focus({ preventScroll: true });
-    }
-  });
+  requestAnimationFrame(() => focusAssetButton(nextAsset.id, true));
+}
+
+function focusAssetButton(assetId, focus = false) {
+  const assetButton = [...ui.assetList.querySelectorAll('.asset-item')]
+    .find((button) => button.dataset.assetId === assetId);
+  if (!assetButton) {
+    return;
+  }
+  ui.assetList.scrollTop = Math.max(
+    0,
+    assetButton.offsetTop - (ui.assetList.clientHeight / 2) + (assetButton.offsetHeight / 2),
+  );
+  if (focus) {
+    assetButton.focus({ preventScroll: true });
+  }
 }
 
 function updateSpinButton() {
   controls.autoRotate = state.autoSpin;
   ui.spinToggle.setAttribute('aria-pressed', String(state.autoSpin));
   ui.spinToggle.classList.toggle('is-active', state.autoSpin);
+}
+
+function getHealthLabel(asset) {
+  if (getAssetHealth(asset) === 'ready') {
+    return 'Ready to view';
+  }
+  if (asset?.previewKind === 'none') {
+    return 'Preview needed';
+  }
+  return 'Preview unavailable';
+}
+
+function updateInspector(asset = state.selectedAsset) {
+  if (!asset) {
+    ui.inspectorPreview.replaceChildren();
+    ui.inspectorPreview.textContent = 'Choose an asset';
+    ui.detailName.textContent = 'No asset selected';
+    ui.detailLocation.textContent = 'Your library';
+    ui.detailStatus.textContent = '—';
+    ui.detailFormat.textContent = '—';
+    ui.detailSize.textContent = '—';
+    ui.detailMeshes.textContent = '—';
+    ui.detailTriangles.textContent = '—';
+    ui.detailMaterials.textContent = '—';
+    ui.detailPath.textContent = 'No source path';
+    ui.favoriteToggle.setAttribute('aria-pressed', 'false');
+    ui.favoriteToggle.textContent = '☆';
+    ui.copyPath.disabled = true;
+    ui.convertAsset.hidden = true;
+    return;
+  }
+
+  const assetKey = getAssetKey(asset);
+  const thumbnail = state.thumbnails.get(assetKey);
+  ui.inspectorPreview.replaceChildren();
+  if (thumbnail) {
+    const image = document.createElement('img');
+    image.src = thumbnail;
+    image.alt = asset.name + ' thumbnail';
+    ui.inspectorPreview.appendChild(image);
+  } else {
+    ui.inspectorPreview.textContent = getFormatLabel(asset);
+  }
+  ui.detailName.textContent = asset.name;
+  ui.detailLocation.textContent = asset.section || asset.pack || 'Uploaded assets';
+  ui.detailStatus.textContent = getHealthLabel(asset);
+  ui.detailFormat.textContent = getFormatLabel(asset);
+  ui.detailSize.textContent = formatBytes(asset.sizeBytes);
+  const metrics = state.metrics.get(assetKey);
+  ui.detailMeshes.textContent = metrics ? formatCount(metrics.meshes) : 'Load to measure';
+  ui.detailTriangles.textContent = metrics ? formatCount(metrics.triangles) : 'Load to measure';
+  ui.detailMaterials.textContent = metrics ? formatCount(metrics.materials) : 'Load to measure';
+  ui.detailPath.textContent = asset.blendPath || asset.previewPath || 'No source path';
+  ui.favoriteToggle.setAttribute('aria-pressed', String(isFavorite(asset)));
+  ui.favoriteToggle.textContent = isFavorite(asset) ? '★' : '☆';
+  ui.favoriteToggle.setAttribute('aria-label', isFavorite(asset) ? 'Remove from favorites' : 'Add to favorites');
+  ui.copyPath.disabled = !(asset.blendPath || asset.previewPath);
+  ui.convertAsset.hidden = !(state.sourceMode === 'server' && asset.previewKind === 'none' && state.blenderAvailable);
+  ui.detailNote.textContent = asset.previewKind === 'none'
+    ? (state.blenderAvailable
+      ? 'This source has no browser preview yet. Generate one locally when you are ready.'
+      : 'This source has no browser preview. Install Blender locally to generate one automatically.')
+    : 'View-only inspection. Your original files are never changed.';
+}
+
+function toggleFavorite(asset = state.selectedAsset) {
+  if (!asset) {
+    return;
+  }
+  const key = getAssetKey(asset);
+  if (state.favorites.has(key)) {
+    state.favorites.delete(key);
+  } else {
+    state.favorites.add(key);
+  }
+  savePreferences();
+  updateInspector(asset);
+  renderAssetList();
 }
 
 function getFormatLabel(asset) {
@@ -591,15 +875,25 @@ function makeAssetButton(asset) {
     button.setAttribute('aria-current', 'true');
   }
 
-  const glyph = document.createElement('span');
-  glyph.className = 'asset-glyph';
-  glyph.textContent = asset.previewKind === 'gltf'
-    ? '3D'
-    : asset.previewKind === 'obj'
-      ? 'OBJ'
-      : asset.previewKind === 'fbx'
-        ? 'FBX'
-        : 'BLD';
+  const thumbnail = document.createElement('span');
+  thumbnail.className = 'asset-thumb';
+  thumbnail.textContent = getFormatLabel(asset);
+  const thumbnailUrl = state.thumbnails.get(getAssetKey(asset));
+  if (thumbnailUrl) {
+    const image = document.createElement('img');
+    image.src = thumbnailUrl;
+    image.alt = '';
+    thumbnail.replaceChildren(image);
+  }
+
+  const status = document.createElement('span');
+  status.className = 'asset-status-dot ' + (getAssetHealth(asset) === 'ready' ? 'ready' : 'attention');
+  status.title = getHealthLabel(asset);
+  thumbnail.appendChild(status);
+
+  const favorite = document.createElement('span');
+  favorite.className = 'asset-favorite';
+  favorite.textContent = isFavorite(asset) ? '★' : '☆';
 
   const copy = document.createElement('span');
   copy.className = 'asset-copy';
@@ -617,7 +911,8 @@ function makeAssetButton(asset) {
   format.textContent = getFormatLabel(asset);
 
   copy.append(name, location);
-  button.append(glyph, copy, format);
+  button.classList.toggle('is-favorite', isFavorite(asset));
+  button.append(thumbnail, favorite, copy, format);
   button.addEventListener('click', () => loadAsset(asset));
   return button;
 }
@@ -625,16 +920,22 @@ function makeAssetButton(asset) {
 function renderAssetList() {
   const query = ui.searchInput.value.trim().toLowerCase();
   const selectedPack = ui.packFilter.value;
+  const selectedHealth = ui.healthFilter.value;
   state.filteredAssets = state.assets.filter((asset) => {
     const matchesPack = selectedPack === 'all' || asset.pack === selectedPack;
     const matchesQuery = !query || getAssetSearchText(asset).includes(query);
-    return matchesPack && matchesQuery;
+    const matchesHealth = selectedHealth === 'all'
+      || (selectedHealth === 'favorites' && isFavorite(asset))
+      || (selectedHealth === 'ready' && getAssetHealth(asset) === 'ready')
+      || (selectedHealth === 'attention' && getAssetHealth(asset) === 'attention');
+    return matchesPack && matchesQuery && matchesHealth;
   });
 
   ui.resultsLabel.textContent = state.assets.length === 0
     ? 'No assets loaded'
-    : state.filteredAssets.length + ' of ' + state.assets.length + ' assets';
+    : state.filteredAssets.length.toLocaleString() + ' of ' + state.assets.length.toLocaleString() + ' assets';
   ui.assetList.replaceChildren();
+  ui.assetList.classList.toggle('is-list', state.viewMode === 'list');
 
   if (state.filteredAssets.length === 0) {
     const empty = document.createElement('div');
@@ -711,7 +1012,10 @@ function setNoLibraryState() {
   state.selectedId = null;
   state.selectedAsset = null;
   state.loadToken += 1;
-  state.autoSpin = false;
+  state.autoSpin = preferences.autoSpin === true;
+  state.assetHealth.clear();
+  state.metrics.clear();
+  state.thumbnails.clear();
   clearModel();
   ui.emptyState.hidden = false;
   ui.resetView.disabled = true;
@@ -728,6 +1032,7 @@ function setNoLibraryState() {
   populatePackFilter({});
   renderAssetList();
   updateSpinButton();
+  updateInspector();
 }
 
 function setLibrary(assets, options) {
@@ -736,7 +1041,10 @@ function setLibrary(assets, options) {
   state.selectedId = null;
   state.selectedAsset = null;
   state.loadToken += 1;
-  state.autoSpin = false;
+  state.assetHealth.clear();
+  state.metrics.clear();
+  state.thumbnails.clear();
+  state.autoSpin = preferences.autoSpin === true;
   clearModel();
   ui.emptyState.hidden = false;
   ui.resetView.disabled = true;
@@ -995,7 +1303,7 @@ function buildUploadedLibrary(fileList) {
 
 async function loadAssetIndex() {
   if (state.sourceMode === 'upload') {
-    ui.folderInput.click();
+    chooseAssetFolder();
     return;
   }
 
@@ -1014,12 +1322,15 @@ async function loadAssetIndex() {
     state.uploadedFiles.clear();
     releaseObjectUrls();
     const assets = (index.assets || []).map((asset) => ({ source: 'server', ...asset }));
-    const preferredAsset = assets.find((asset) => asset.name === 'Imperial') || assets[0];
+    const preferredAsset = assets.find((asset) => getAssetKey(asset) === preferences.selectedKey)
+      || assets.find((asset) => asset.name === 'Imperial')
+      || assets[0];
     setLibrary(assets, {
       statusText: 'Local library connected',
       footerText: (index.total || assets.length) + ' preview assets',
       preferredAsset,
     });
+    await loadBlenderStatus();
   } catch {
     state.sourceMode = 'none';
     state.uploadedFolderName = '';
@@ -1030,7 +1341,24 @@ async function loadAssetIndex() {
   }
 }
 
-function loadUploadedFolder(fileList) {
+async function loadBlenderStatus() {
+  if (state.sourceMode !== 'server') {
+    state.blenderAvailable = false;
+    updateInspector();
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/blender', { cache: 'no-store' });
+    const result = await response.json();
+    state.blenderAvailable = Boolean(result.available);
+  } catch {
+    state.blenderAvailable = false;
+  }
+  updateInspector();
+}
+
+function loadUploadedFolder(fileList, explicitFolderName = '') {
   if (!fileList || fileList.length === 0) {
     return;
   }
@@ -1042,13 +1370,16 @@ function loadUploadedFolder(fileList) {
     }
 
     state.sourceMode = 'upload';
-    state.uploadedFolderName = library.folderName;
+    state.blenderAvailable = false;
+    state.uploadedFolderName = explicitFolderName || library.folderName;
+    savePreferences({ folderName: state.uploadedFolderName });
     state.uploadedFiles = library.fileMap;
     releaseObjectUrls();
     setLibrary(library.assets, {
-      statusText: library.folderName + ' · ' + library.assets.length + ' assets',
+      statusText: state.uploadedFolderName + ' · ' + library.assets.length + ' assets',
       footerText: 'Files stay in browser',
     });
+    updateInspector();
   } catch (error) {
     console.warn(error);
     state.sourceMode = 'none';
@@ -1059,6 +1390,144 @@ function loadUploadedFolder(fileList) {
       'Choose a folder containing .blend files and matching glTF, GLB, OBJ, or FBX exports.',
     );
   }
+}
+
+async function collectDirectoryFiles(directoryHandle, parentPath = '') {
+  const files = [];
+  for await (const entry of directoryHandle.values()) {
+    const entryPath = joinPathParts(parentPath, entry.name);
+    if (entry.name.startsWith('.')) {
+      continue;
+    }
+    if (entry.kind === 'directory') {
+      files.push(...await collectDirectoryFiles(entry, entryPath));
+      continue;
+    }
+    const file = await entry.getFile();
+    try {
+      Object.defineProperty(file, 'webkitRelativePath', { value: entryPath });
+    } catch {
+      // The fallback path is still usable for a flat folder.
+    }
+    files.push(file);
+  }
+  return files;
+}
+
+async function chooseAssetFolder() {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    ui.folderInput.click();
+    return;
+  }
+
+  try {
+    const directoryHandle = await window.showDirectoryPicker({ mode: 'read' });
+    const files = await collectDirectoryFiles(directoryHandle, directoryHandle.name);
+    loadUploadedFolder(files, directoryHandle.name);
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      console.warn(error);
+    }
+  }
+}
+
+function readDroppedDirectory(entry, parentPath = '') {
+  return new Promise((resolve, reject) => {
+    const reader = entry.createReader();
+    const files = [];
+    const readBatch = () => {
+      reader.readEntries(async (entries) => {
+        if (entries.length === 0) {
+          resolve(files);
+          return;
+        }
+        try {
+          for (const child of entries) {
+            const childPath = joinPathParts(parentPath, child.name);
+            if (child.isDirectory) {
+              files.push(...await readDroppedDirectory(child, childPath));
+            } else {
+              const file = await new Promise((fileResolve, fileReject) => child.file(fileResolve, fileReject));
+              try {
+                Object.defineProperty(file, 'webkitRelativePath', { value: childPath });
+              } catch {
+                // The file name remains available if the browser blocks this property.
+              }
+              files.push(file);
+            }
+          }
+          readBatch();
+        } catch (error) {
+          reject(error);
+        }
+      }, reject);
+    };
+    readBatch();
+  });
+}
+
+async function getDroppedFiles(dataTransfer) {
+  const entries = [...(dataTransfer.items || [])]
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter(Boolean);
+  if (entries.length === 0) {
+    return [...(dataTransfer.files || [])];
+  }
+
+  const files = [];
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      files.push(...await readDroppedDirectory(entry, entry.name));
+    } else if (entry.isFile) {
+      const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+      files.push(file);
+    }
+  }
+  return files;
+}
+
+async function convertSelectedAsset() {
+  const asset = state.selectedAsset;
+  if (!asset || state.sourceMode !== 'server' || asset.previewKind !== 'none') {
+    return;
+  }
+
+  ui.convertAsset.disabled = true;
+  ui.convertAsset.textContent = 'Generating…';
+  try {
+    const response = await fetch('/api/convert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relativePath: asset.blendPath }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || 'Preview generation failed');
+    }
+    await loadAssetIndex();
+    const nextAsset = state.assets.find((candidate) => candidate.blendPath === asset.blendPath);
+    if (nextAsset) {
+      loadAsset(nextAsset);
+    }
+  } catch (error) {
+    ui.detailNote.textContent = error.message || 'Preview generation failed.';
+  } finally {
+    ui.convertAsset.disabled = false;
+    ui.convertAsset.textContent = 'Generate preview';
+  }
+}
+
+function updateDetailsVisibility(open = !state.detailsOpen) {
+  state.detailsOpen = Boolean(open);
+  ui.inspectorPanel.hidden = !state.detailsOpen;
+  ui.detailsToggle.setAttribute('aria-pressed', String(state.detailsOpen));
+  if (state.detailsOpen) {
+    updateInspector();
+  }
+}
+
+function updateFullscreenLabel() {
+  ui.fullscreenToggle.textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
 }
 
 function resizeRenderer() {
@@ -1079,15 +1548,56 @@ function renderLoop() {
   renderer.render(scene, camera);
 }
 
-ui.chooseFolder.addEventListener('click', () => ui.folderInput.click());
-ui.chooseFolderEmpty.addEventListener('click', () => ui.folderInput.click());
+ui.chooseFolder.addEventListener('click', chooseAssetFolder);
+ui.chooseFolderEmpty.addEventListener('click', chooseAssetFolder);
 ui.folderInput.addEventListener('change', (event) => {
   loadUploadedFolder(event.target.files);
   event.target.value = '';
 });
 ui.searchInput.addEventListener('input', renderAssetList);
 ui.packFilter.addEventListener('change', renderAssetList);
+ui.healthFilter.addEventListener('change', renderAssetList);
+ui.gridView.addEventListener('click', () => {
+  state.viewMode = 'grid';
+  ui.gridView.classList.add('is-active');
+  ui.listView.classList.remove('is-active');
+  ui.gridView.setAttribute('aria-pressed', 'true');
+  ui.listView.setAttribute('aria-pressed', 'false');
+  savePreferences();
+  renderAssetList();
+});
+ui.listView.addEventListener('click', () => {
+  state.viewMode = 'list';
+  ui.listView.classList.add('is-active');
+  ui.gridView.classList.remove('is-active');
+  ui.listView.setAttribute('aria-pressed', 'true');
+  ui.gridView.setAttribute('aria-pressed', 'false');
+  savePreferences();
+  renderAssetList();
+});
 ui.refreshAssets.addEventListener('click', loadAssetIndex);
+ui.detailsToggle.addEventListener('click', () => updateDetailsVisibility());
+ui.closeInspector.addEventListener('click', () => updateDetailsVisibility(false));
+ui.favoriteToggle.addEventListener('click', () => toggleFavorite());
+ui.convertAsset.addEventListener('click', convertSelectedAsset);
+ui.copyPath.addEventListener('click', async () => {
+  const path = state.selectedAsset?.blendPath || state.selectedAsset?.previewPath;
+  if (!path || !navigator.clipboard) {
+    return;
+  }
+  await navigator.clipboard.writeText(path);
+  const originalLabel = ui.copyPath.textContent;
+  ui.copyPath.textContent = 'Copied';
+  window.setTimeout(() => { ui.copyPath.textContent = originalLabel; }, 1100);
+});
+ui.fullscreenToggle.addEventListener('click', async () => {
+  if (document.fullscreenElement) {
+    await document.exitFullscreen?.();
+  } else {
+    await ui.viewportShell.requestFullscreen?.();
+  }
+  updateFullscreenLabel();
+});
 ui.resetView.addEventListener('click', () => {
   if (!state.selectedAsset) {
     return;
@@ -1100,8 +1610,33 @@ ui.spinToggle.addEventListener('click', () => {
     return;
   }
   state.autoSpin = !state.autoSpin;
+  savePreferences();
   updateSpinButton();
 });
+let dragDepth = 0;
+ui.viewportShell.addEventListener('dragenter', (event) => {
+  event.preventDefault();
+  dragDepth += 1;
+  ui.dropOverlay.hidden = false;
+});
+ui.viewportShell.addEventListener('dragover', (event) => {
+  event.preventDefault();
+});
+ui.viewportShell.addEventListener('dragleave', (event) => {
+  event.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) {
+    ui.dropOverlay.hidden = true;
+  }
+});
+ui.viewportShell.addEventListener('drop', async (event) => {
+  event.preventDefault();
+  dragDepth = 0;
+  ui.dropOverlay.hidden = true;
+  const files = await getDroppedFiles(event.dataTransfer);
+  loadUploadedFolder(files);
+});
+window.addEventListener('fullscreenchange', updateFullscreenLabel);
 window.addEventListener('resize', resizeRenderer);
 window.addEventListener('keydown', (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) {
@@ -1123,6 +1658,33 @@ window.addEventListener('keydown', (event) => {
 
 setNoLibraryState();
 resizeRenderer();
+ui.assetList.classList.toggle('is-list', state.viewMode === 'list');
+ui.gridView.classList.toggle('is-active', state.viewMode === 'grid');
+ui.listView.classList.toggle('is-active', state.viewMode === 'list');
+ui.gridView.setAttribute('aria-pressed', String(state.viewMode === 'grid'));
+ui.listView.setAttribute('aria-pressed', String(state.viewMode === 'list'));
+updateDetailsVisibility(false);
 updateSpinButton();
 loadAssetIndex();
 renderLoop();
+
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  ui.installApp.hidden = false;
+});
+ui.installApp.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) {
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  ui.installApp.hidden = true;
+});
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {
+    // The viewer remains usable when service workers are unavailable.
+  });
+}

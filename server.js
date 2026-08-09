@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_ROOT = path.join(APP_ROOT, 'public');
 const THREE_ROOT = path.join(APP_ROOT, 'node_modules', 'three');
-const ASSET_ROOT = path.resolve(process.env.SPACE_PACKS_ROOT || path.join(APP_ROOT, 'assets'));
+const ASSET_ROOT = path.resolve(process.env.ASSET_ROOT || process.env.SPACE_PACKS_ROOT || path.join(APP_ROOT, 'assets'));
 const PORT = Number(process.env.PORT || 4173);
 
 const MIME_TYPES = {
+  '.bin': 'application/octet-stream',
   '.css': 'text/css; charset=utf-8',
   '.fbx': 'application/octet-stream',
   '.gltf': 'model/gltf+json',
@@ -24,16 +26,15 @@ const MIME_TYPES = {
   '.obj': 'text/plain; charset=utf-8',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.webp': 'image/webp',
+  '.hdr': 'application/octet-stream',
+  '.ktx2': 'application/octet-stream',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
 };
 
-const PACK_ORDER = [
-  'Ultimate Spaceships - May 2021',
-  'Ultimate Space Kit - March 2023',
-  'Ultimate Monsters',
-  'Ultimate Modular Sci-Fi - Feb 2021',
-];
+const BLENDER_CACHE_FOLDER = '.asset-viewer-cache';
 
 function isInside(targetPath, rootPath) {
   const target = path.resolve(targetPath);
@@ -47,6 +48,10 @@ function isFile(filePath) {
   } catch {
     return false;
   }
+}
+
+function lowerPath(value) {
+  return String(value || '').split(path.sep).join('/').toLowerCase();
 }
 
 function walkFiles(rootPath) {
@@ -128,12 +133,17 @@ function findExport(groupRoot, blendSubdirectory, baseName, exportDirectoryNames
   return null;
 }
 
+function findSiblingExport(directory, baseName, extensions) {
+  return extensions
+    .map((extension) => path.join(directory, `${baseName}${extension}`))
+    .find(isFile) || null;
+}
+
 function getPackName(relativeBlendPath) {
   return relativeBlendPath.split(path.sep)[0];
 }
 
 function getSectionName(relativeBlendPath, blendInfo) {
-  const packName = getPackName(relativeBlendPath);
   const groupRelative = path.relative(ASSET_ROOT, blendInfo.groupRoot);
   const groupSegments = groupRelative ? groupRelative.split(path.sep).slice(1) : [];
 
@@ -145,11 +155,31 @@ function getSectionName(relativeBlendPath, blendInfo) {
     return blendInfo.blendSubdirectory.join(' / ');
   }
 
-  if (packName.includes('Modular')) {
-    return 'Modular pieces';
-  }
-
   return 'Core assets';
+}
+
+function getCachedPreviewPath(blendPath) {
+  const baseName = path.basename(blendPath, path.extname(blendPath));
+  return path.join(path.dirname(blendPath), BLENDER_CACHE_FOLDER, `${baseName}.glb`);
+}
+
+function getStandalonePreviewInfo(filePath, relativePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  const baseName = path.basename(filePath, extension);
+  const directory = path.dirname(filePath);
+  const mtlPath = extension === '.obj' ? path.join(directory, `${baseName}.mtl`) : null;
+  const previewKind = extension === '.fbx' ? 'fbx' : extension === '.obj' ? 'obj' : 'gltf';
+  return {
+    previewKind,
+    previewLabel: previewKind === 'fbx' ? 'FBX' : previewKind === 'obj' ? 'OBJ' : 'glTF',
+    previewPath: relativePath,
+    previewUrl: makeAssetUrl(filePath),
+    objUrl: extension === '.obj' ? makeAssetUrl(filePath) : null,
+    mtlUrl: mtlPath && isFile(mtlPath) ? makeAssetUrl(mtlPath) : null,
+    fbxUrl: extension === '.fbx' ? makeAssetUrl(filePath) : null,
+    section: path.dirname(relativePath) || 'Root assets',
+    blendPath: relativePath,
+  };
 }
 
 function getPreviewInfo(blendPath, relativeBlendPath) {
@@ -157,11 +187,34 @@ function getPreviewInfo(blendPath, relativeBlendPath) {
   const baseName = path.basename(blendPath, path.extname(blendPath));
 
   if (!blendInfo) {
+    const directory = path.dirname(blendPath);
+    const gltfPath = findSiblingExport(directory, baseName, ['.gltf', '.glb']);
+    const objPath = findSiblingExport(directory, baseName, ['.obj']);
+    const mtlPath = objPath ? findSiblingExport(directory, path.basename(objPath, '.obj'), ['.mtl']) : null;
+    const fbxPath = findSiblingExport(directory, baseName, ['.fbx']);
+    const siblingPreview = gltfPath || objPath || fbxPath;
+    if (siblingPreview) {
+      const previewKind = gltfPath ? 'gltf' : objPath ? 'obj' : 'fbx';
+      return {
+        previewKind,
+        previewLabel: previewKind === 'gltf' ? 'glTF' : previewKind.toUpperCase(),
+        previewPath: path.relative(ASSET_ROOT, siblingPreview),
+        previewUrl: makeAssetUrl(siblingPreview),
+        objUrl: objPath ? makeAssetUrl(objPath) : null,
+        mtlUrl: mtlPath ? makeAssetUrl(mtlPath) : null,
+        fbxUrl: fbxPath ? makeAssetUrl(fbxPath) : null,
+        section: path.dirname(relativeBlendPath) || 'Root assets',
+        blendPath: relativeBlendPath,
+        relatedPreviewPaths: [gltfPath, objPath, mtlPath, fbxPath].filter(isFile)
+          .map((filePath) => path.relative(ASSET_ROOT, filePath)),
+      };
+    }
     return {
       previewKind: 'none',
       previewLabel: 'Blend only',
       section: 'Unknown folder',
       blendPath: relativeBlendPath,
+      relatedPreviewPaths: [],
     };
   }
 
@@ -186,6 +239,17 @@ function getPreviewInfo(blendPath, relativeBlendPath) {
     ['OBJ', 'Obj', 'obj'],
     ['.mtl'],
   );
+  const fbxPath = findExport(
+    blendInfo.groupRoot,
+    blendInfo.blendSubdirectory,
+    baseName,
+    ['FBX', 'Fbx', 'fbx'],
+    ['.fbx'],
+  );
+  const cachedPreviewPath = getCachedPreviewPath(blendPath);
+  const relatedPreviewPaths = [gltfPath, objPath, mtlPath, fbxPath, cachedPreviewPath]
+    .filter(isFile)
+    .map((filePath) => path.relative(ASSET_ROOT, filePath));
 
   if (gltfPath) {
     return {
@@ -195,8 +259,10 @@ function getPreviewInfo(blendPath, relativeBlendPath) {
       previewUrl: makeAssetUrl(gltfPath),
       objUrl: objPath ? makeAssetUrl(objPath) : null,
       mtlUrl: mtlPath ? makeAssetUrl(mtlPath) : null,
+      fbxUrl: fbxPath ? makeAssetUrl(fbxPath) : null,
       section: getSectionName(relativeBlendPath, blendInfo),
       blendPath: relativeBlendPath,
+      relatedPreviewPaths,
     };
   }
 
@@ -208,8 +274,40 @@ function getPreviewInfo(blendPath, relativeBlendPath) {
       previewUrl: makeAssetUrl(objPath),
       objUrl: makeAssetUrl(objPath),
       mtlUrl: mtlPath ? makeAssetUrl(mtlPath) : null,
+      fbxUrl: fbxPath ? makeAssetUrl(fbxPath) : null,
       section: getSectionName(relativeBlendPath, blendInfo),
       blendPath: relativeBlendPath,
+      relatedPreviewPaths,
+    };
+  }
+
+  if (fbxPath) {
+    return {
+      previewKind: 'fbx',
+      previewLabel: 'FBX',
+      previewPath: path.relative(ASSET_ROOT, fbxPath),
+      previewUrl: makeAssetUrl(fbxPath),
+      objUrl: null,
+      mtlUrl: null,
+      fbxUrl: makeAssetUrl(fbxPath),
+      section: getSectionName(relativeBlendPath, blendInfo),
+      blendPath: relativeBlendPath,
+      relatedPreviewPaths,
+    };
+  }
+
+  if (isFile(cachedPreviewPath)) {
+    return {
+      previewKind: 'gltf',
+      previewLabel: 'Generated GLB',
+      previewPath: path.relative(ASSET_ROOT, cachedPreviewPath),
+      previewUrl: makeAssetUrl(cachedPreviewPath),
+      objUrl: null,
+      mtlUrl: null,
+      fbxUrl: null,
+      section: getSectionName(relativeBlendPath, blendInfo),
+      blendPath: relativeBlendPath,
+      relatedPreviewPaths,
     };
   }
 
@@ -218,21 +316,22 @@ function getPreviewInfo(blendPath, relativeBlendPath) {
     previewLabel: 'Blend only',
     section: getSectionName(relativeBlendPath, blendInfo),
     blendPath: relativeBlendPath,
+    fbxUrl: null,
+    relatedPreviewPaths,
   };
 }
 
 function buildAssetIndex() {
-  const blendFiles = walkFiles(ASSET_ROOT)
-    .filter((filePath) => path.extname(filePath).toLowerCase() === '.blend')
-    .sort((a, b) => a.localeCompare(b));
+  const allFiles = walkFiles(ASSET_ROOT).sort((a, b) => a.localeCompare(b));
+  const blendFiles = allFiles.filter((filePath) => path.extname(filePath).toLowerCase() === '.blend');
 
-  const assets = blendFiles.map((blendPath, index) => {
+  const assets = blendFiles.map((blendPath) => {
     const relativeBlendPath = path.relative(ASSET_ROOT, blendPath);
     const previewInfo = getPreviewInfo(blendPath, relativeBlendPath);
     const stats = fs.statSync(blendPath);
 
     return {
-      id: String(index),
+      id: '',
       name: path.basename(blendPath, path.extname(blendPath)),
       pack: getPackName(relativeBlendPath),
       location: path.dirname(relativeBlendPath),
@@ -241,14 +340,45 @@ function buildAssetIndex() {
     };
   });
 
+  const claimedPreviewPaths = new Set(
+    assets
+      .flatMap((asset) => asset.relatedPreviewPaths || [asset.previewPath])
+      .filter(Boolean)
+      .map((previewPath) => lowerPath(previewPath)),
+  );
+  const standalonePriority = { '.glb': 0, '.gltf': 1, '.obj': 2, '.fbx': 3 };
+  const standaloneFiles = new Map();
+  allFiles
+    .filter((filePath) => Object.hasOwn(standalonePriority, path.extname(filePath).toLowerCase()))
+    .forEach((filePath) => {
+      const relativePath = path.relative(ASSET_ROOT, filePath);
+      if (claimedPreviewPaths.has(lowerPath(relativePath))) {
+        return;
+      }
+      const extension = path.extname(filePath).toLowerCase();
+      const key = lowerPath(path.join(path.dirname(relativePath), path.basename(relativePath, extension)));
+      const current = standaloneFiles.get(key);
+      if (!current || standalonePriority[extension] < standalonePriority[current.extension]) {
+        standaloneFiles.set(key, { filePath, relativePath, extension });
+      }
+    });
+
+  standaloneFiles.forEach(({ filePath, relativePath }) => {
+    const previewInfo = getStandalonePreviewInfo(filePath, relativePath);
+    const stats = fs.statSync(filePath);
+    assets.push({
+      id: '',
+      sourceKind: 'preview',
+      name: path.basename(filePath, path.extname(filePath)),
+      pack: getPackName(relativePath),
+      location: path.dirname(relativePath),
+      sizeBytes: stats.size,
+      ...previewInfo,
+    });
+  });
+
   assets.sort((a, b) => {
-    const aOrder = PACK_ORDER.indexOf(a.pack);
-    const bOrder = PACK_ORDER.indexOf(b.pack);
-    const packDifference = (aOrder === -1 ? 999 : aOrder) - (bOrder === -1 ? 999 : bOrder);
-    if (packDifference !== 0) {
-      return packDifference;
-    }
-    return `${a.section}/${a.name}`.localeCompare(`${b.section}/${b.name}`);
+    return `${a.pack}/${a.section}/${a.name}`.localeCompare(`${b.pack}/${b.section}/${b.name}`);
   });
 
   assets.forEach((asset, index) => {
@@ -281,6 +411,125 @@ function sendJson(response, data, statusCode = 200) {
     'Content-Length': Buffer.byteLength(body),
   });
   response.end(body);
+}
+
+function getBlenderExecutable() {
+  const candidates = [
+    process.env.BLENDER_BIN,
+    '/Applications/Blender.app/Contents/MacOS/Blender',
+    '/Applications/Blender.app/Contents/MacOS/blender',
+    '/usr/bin/blender',
+    '/opt/homebrew/bin/blender',
+    'blender',
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      if (path.isAbsolute(candidate)) {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      }
+      const resolved = execFileSync(process.platform === 'win32' ? 'where' : 'which', [candidate], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim().split(/\r?\n/)[0];
+      if (resolved) {
+        return resolved;
+      }
+    } catch {
+      // Try the next common installation path.
+    }
+  }
+  return null;
+}
+
+function readRequestJson(request) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) {
+        reject(new Error('Request body too large'));
+        request.destroy();
+      }
+    });
+    request.on('end', () => {
+      try {
+        resolve(JSON.parse(body || '{}'));
+      } catch {
+        reject(new Error('Invalid JSON request'));
+      }
+    });
+    request.on('error', reject);
+  });
+}
+
+async function handleConvertRequest(request, response) {
+  try {
+    const body = await readRequestJson(request);
+    const relativePath = typeof body.relativePath === 'string' ? body.relativePath : '';
+    const blendPath = path.resolve(ASSET_ROOT, relativePath);
+    if (!relativePath || !isInside(blendPath, ASSET_ROOT) || path.extname(blendPath).toLowerCase() !== '.blend' || !isFile(blendPath)) {
+      sendJson(response, { error: 'Choose a .blend file inside the configured asset folder.' }, 400);
+      return;
+    }
+
+    const cachedPreviewPath = getCachedPreviewPath(blendPath);
+    if (isFile(cachedPreviewPath)) {
+      sendJson(response, {
+        ok: true,
+        cached: true,
+        previewPath: path.relative(ASSET_ROOT, cachedPreviewPath),
+      });
+      return;
+    }
+
+    const blenderExecutable = getBlenderExecutable();
+    if (!blenderExecutable) {
+      sendJson(response, {
+        error: 'Blender was not found. Install Blender or set BLENDER_BIN before starting the local viewer.',
+      }, 503);
+      return;
+    }
+
+    fs.mkdirSync(path.dirname(cachedPreviewPath), { recursive: true });
+    const pythonExpression = [
+      'import bpy',
+      `bpy.ops.export_scene.gltf(filepath=${JSON.stringify(cachedPreviewPath)}, export_format='GLB', export_apply=True)`,
+    ].join('; ');
+    const child = spawn(blenderExecutable, [
+      '--background',
+      blendPath,
+      '--python-expr',
+      pythonExpression,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr = (stderr + chunk.toString()).slice(-4000);
+    });
+    const timeout = setTimeout(() => child.kill('SIGTERM'), 5 * 60 * 1000);
+    child.on('error', (error) => {
+      clearTimeout(timeout);
+      sendJson(response, { error: error.message }, 500);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code === 0 && isFile(cachedPreviewPath)) {
+        sendJson(response, {
+          ok: true,
+          cached: false,
+          previewPath: path.relative(ASSET_ROOT, cachedPreviewPath),
+        });
+        return;
+      }
+      sendJson(response, {
+        error: 'Blender could not generate a GLB preview.' + (stderr ? ` ${stderr.trim().split('\n').slice(-1)[0]}` : ''),
+      }, 500);
+    });
+  } catch (error) {
+    sendJson(response, { error: error.message || 'Preview generation failed.' }, 400);
+  }
 }
 
 function serveFile(response, filePath, options = {}) {
@@ -363,6 +612,17 @@ function handleRequest(request, response) {
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
   const pathname = requestUrl.pathname;
 
+  if (pathname === '/api/blender') {
+    const executable = getBlenderExecutable();
+    sendJson(response, { available: Boolean(executable) });
+    return;
+  }
+
+  if (pathname === '/api/convert' && request.method === 'POST') {
+    handleConvertRequest(request, response);
+    return;
+  }
+
   if (pathname === '/api/assets') {
     assetIndex = buildAssetIndex();
     sendJson(response, assetIndex);
@@ -398,7 +658,7 @@ function handleRequest(request, response) {
 const server = http.createServer(handleRequest);
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Space Pack Viewer running at http://127.0.0.1:${PORT}`);
+  console.log(`Asset Shelf running at http://127.0.0.1:${PORT}`);
   console.log(`Watching asset folder: ${ASSET_ROOT}`);
-  console.log(`Indexed ${assetIndex.total} .blend files.`);
+  console.log(`Indexed ${assetIndex.total} assets.`);
 });

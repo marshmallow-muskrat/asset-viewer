@@ -1,0 +1,11 @@
+{
+  "name": "Asset Shelf",
+  "short_name": "Asset Shelf",
+  "description": "A private, local-first visual library for browsing 3D assets.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111214",
+  "theme_color": "#111214",
+  "categories": ["utilities", "design", "developer"],
+  "icons": []
+}

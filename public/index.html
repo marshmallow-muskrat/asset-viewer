@@ -4,13 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#080e16" />
-    <title>3D Asset Viewer</title>
+    <meta name="description" content="A private, local-first visual library for browsing 3D assets." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Asset Shelf</title>
     <link rel="stylesheet" href="/styles.css" />
     <script type="importmap">
       {
         "imports": {
-          "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
-          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+          "three": "/vendor/three.module.js",
+          "three/addons/": "/vendor/examples/jsm/"
         }
       }
     </script>
@@ -23,8 +25,8 @@
             <span></span><span></span><span></span>
           </div>
           <div>
-            <p class="eyebrow">3D ASSET LIBRARY</p>
-            <h1>Asset viewer</h1>
+            <p class="eyebrow">LOCAL 3D LIBRARY</p>
+            <h1>Asset Shelf</h1>
           </div>
         </div>
 
@@ -42,7 +44,8 @@
             <span>Choose asset folder</span>
           </button>
           <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
-          <p class="folder-help">Files stay in this browser. Nothing is uploaded.</p>
+          <p class="folder-help">Private by default · nothing is uploaded</p>
+          <button id="installApp" class="install-button" type="button" hidden>Install Asset Shelf</button>
         </div>
 
         <div class="sidebar-controls">
@@ -58,6 +61,25 @@
               <path d="m16 16 4.25 4.25"></path>
             </svg>
             <input id="searchInput" type="search" placeholder="Search by name or folder" autocomplete="off" />
+          </div>
+
+          <div class="filter-row">
+            <div class="filter-field">
+              <label class="field-label" for="healthFilter">Status</label>
+              <select id="healthFilter" class="select-control compact-select">
+                <option value="all">All assets</option>
+                <option value="ready">Ready to view</option>
+                <option value="attention">Needs attention</option>
+                <option value="favorites">Favorites</option>
+              </select>
+            </div>
+            <div class="view-field">
+              <span class="field-label">View</span>
+              <div class="view-toggle" role="group" aria-label="Asset view">
+                <button id="gridView" class="view-button is-active" type="button" aria-label="Grid view" aria-pressed="true">▦</button>
+                <button id="listView" class="view-button" type="button" aria-label="List view" aria-pressed="false">☷</button>
+              </div>
+            </div>
           </div>
 
           <div class="results-row">
@@ -101,19 +123,28 @@
             <span class="key-hint">↑ ↓</span>
             <span>to browse</span>
           </div>
+          <div class="topbar-actions">
+            <button id="detailsToggle" class="topbar-button" type="button" aria-pressed="false">Details</button>
+            <button id="fullscreenToggle" class="topbar-button" type="button">Fullscreen</button>
+          </div>
         </header>
 
         <section id="viewportShell" class="viewport-shell" aria-label="3D asset preview">
           <div class="viewport-backdrop"></div>
           <div id="viewport" class="viewport"></div>
+          <div id="dropOverlay" class="drop-overlay" hidden>
+            <div class="drop-icon">↓</div>
+            <strong>Drop an asset folder here</strong>
+            <span>Everything stays on this device</span>
+          </div>
 
           <div id="emptyState" class="empty-state">
             <div class="empty-orbit" aria-hidden="true">
               <span></span><span></span><span></span>
             </div>
             <p class="eyebrow">READY WHEN YOU ARE</p>
-            <h2>Choose a folder to inspect assets</h2>
-            <p class="empty-description">Pick a folder containing .blend files and matching glTF, GLB, OBJ, or FBX previews. Drag to orbit—there are no editing tools here.</p>
+            <h2>See what is in your library</h2>
+            <p class="empty-description">Choose or drop a folder containing 3D assets. Asset Shelf builds a private visual catalog on this device.</p>
             <button id="chooseFolderEmpty" class="empty-action" type="button">Choose an asset folder</button>
           </div>
 
@@ -154,6 +185,40 @@
             <span>Pan</span>
           </div>
         </section>
+
+        <aside id="inspectorPanel" class="inspector-panel" aria-label="Asset details" hidden>
+          <div class="inspector-heading">
+            <div>
+              <p class="eyebrow">INSPECT</p>
+              <h2>Asset details</h2>
+            </div>
+            <button id="closeInspector" class="icon-button" type="button" aria-label="Close asset details">×</button>
+          </div>
+          <div class="inspector-preview" id="inspectorPreview">
+            <span>Choose an asset</span>
+          </div>
+          <div class="inspector-title-row">
+            <div>
+              <h3 id="detailName">No asset selected</h3>
+              <p id="detailLocation">Your library</p>
+            </div>
+            <button id="favoriteToggle" class="favorite-button" type="button" aria-pressed="false" aria-label="Add to favorites">☆</button>
+          </div>
+          <dl class="detail-list">
+            <div><dt>Status</dt><dd id="detailStatus">—</dd></div>
+            <div><dt>Format</dt><dd id="detailFormat">—</dd></div>
+            <div><dt>Size</dt><dd id="detailSize">—</dd></div>
+            <div><dt>Meshes</dt><dd id="detailMeshes">—</dd></div>
+            <div><dt>Triangles</dt><dd id="detailTriangles">—</dd></div>
+            <div><dt>Materials</dt><dd id="detailMaterials">—</dd></div>
+          </dl>
+          <p id="detailPath" class="detail-path">No source path</p>
+          <div class="inspector-actions">
+            <button id="copyPath" class="secondary-button" type="button" disabled>Copy source path</button>
+            <button id="convertAsset" class="secondary-button" type="button" hidden>Generate preview</button>
+          </div>
+          <p id="detailNote" class="detail-note">View-only inspection. Your original files are never changed.</p>
+        </aside>
 
         <footer class="asset-footer">
           <div class="asset-meta">
