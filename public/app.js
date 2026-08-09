@@ -1026,8 +1026,8 @@ function setNoLibraryState() {
   ui.previewBadge.textContent = 'No preview loaded';
   ui.previewFormat.textContent = '—';
   setEmptyState(
-    'Choose a folder to inspect assets',
-    'Pick a folder containing .blend files and matching glTF, GLB, OBJ, or FBX previews. Files stay in your browser.',
+    'See what is in your library',
+    'Choose or drop a folder containing 3D assets. Asset Shelf builds a private visual catalog on this device.',
   );
   populatePackFilter({});
   renderAssetList();
