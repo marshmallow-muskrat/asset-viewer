@@ -536,6 +536,33 @@ function loadAsset(asset) {
   renderAssetList();
 }
 
+function moveSelection(direction) {
+  if (state.filteredAssets.length === 0) {
+    return;
+  }
+
+  const currentIndex = state.filteredAssets.findIndex((asset) => asset.id === state.selectedId);
+  const startingIndex = currentIndex === -1
+    ? (direction > 0 ? 0 : state.filteredAssets.length - 1)
+    : currentIndex + direction;
+  const nextIndex = Math.max(0, Math.min(startingIndex, state.filteredAssets.length - 1));
+  const nextAsset = state.filteredAssets[nextIndex];
+
+  if (!nextAsset || nextAsset.id === state.selectedId) {
+    return;
+  }
+
+  loadAsset(nextAsset);
+  requestAnimationFrame(() => {
+    const nextButton = [...ui.assetList.querySelectorAll('.asset-item')]
+      .find((button) => button.dataset.assetId === nextAsset.id);
+    if (nextButton) {
+      nextButton.scrollIntoView({ block: 'nearest' });
+      nextButton.focus({ preventScroll: true });
+    }
+  });
+}
+
 function updateSpinButton() {
   controls.autoRotate = state.autoSpin;
   ui.spinToggle.setAttribute('aria-pressed', String(state.autoSpin));
@@ -1080,6 +1107,11 @@ ui.spinToggle.addEventListener('click', () => {
 window.addEventListener('resize', resizeRenderer);
 window.addEventListener('keydown', (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) {
+    return;
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveSelection(event.key === 'ArrowDown' ? 1 : -1);
     return;
   }
   if (event.key.toLowerCase() === 'r') {
