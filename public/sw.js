@@ -1,4 +1,4 @@
-const CACHE_NAME = 'asset-shelf-shell-v1';
+const CACHE_NAME = 'asset-shelf-shell-v2';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -29,6 +29,9 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET' || new URL(event.request.url).origin !== self.location.origin) {
+    return;
+  }
+  if (new URL(event.request.url).pathname === '/sw.js') {
     return;
   }
 
