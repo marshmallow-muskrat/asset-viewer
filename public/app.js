@@ -520,8 +520,6 @@ function loadAsset(asset) {
   clearModel();
   ui.resetView.disabled = true;
   ui.spinToggle.disabled = true;
-  state.autoSpin = false;
-  updateSpinButton();
 
   if (asset.previewKind === 'gltf' && getAssetFileUrl(asset, 'preview')) {
     loadGltf(asset, token);
